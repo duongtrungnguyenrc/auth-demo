@@ -1,19 +1,19 @@
-import { RequestHandlerUtils } from '@/utils';
-import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { JwtService } from '@nestjs/jwt';
-import { AuthService } from '@/services';
+import { RequestHandlerUtils } from "@/utils";
+import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { JwtService } from "@nestjs/jwt";
+import { AuthService } from "@/services";
 
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(
-    private reflector: Reflector,
-    private jwtService: JwtService,
+    private readonly reflector: Reflector,
+    private readonly jwtService: JwtService,
     private readonly authService: AuthService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const roles = this.reflector.get<string[]>('roles', context.getHandler());
+    const roles = this.reflector.get<string[]>("roles", context.getHandler());
 
     if (!roles) {
       return true;
@@ -26,15 +26,14 @@ export class AuthGuard implements CanActivate {
       return false;
     }
 
-    const isBlacklisted = await this.authService.getBlacklistToken(token);
-    if (isBlacklisted) {
+    if (this.authService.inBlackList(token)) {
       return false;
     }
 
     try {
       const decodedToken = this.jwtService.verify(token);
 
-      if (roles.includes('*')) {
+      if (roles.includes("*")) {
         return true;
       }
 

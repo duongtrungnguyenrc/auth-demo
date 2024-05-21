@@ -5,29 +5,31 @@ import {
   Injectable,
   InternalServerErrorException,
   UnauthorizedException,
-} from '@nestjs/common';
-import { JwtService, TokenExpiredError } from '@nestjs/jwt';
-import * as bcrypt from 'bcrypt';
-import { CreateUserDto, LoginDto } from '@/models/dtos';
-import { User } from '@/models/entities';
-import { RequestHandlerUtils } from '@/utils';
-import { v4 as uuidv4 } from 'uuid';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Cache } from 'cache-manager';
+} from "@nestjs/common";
+import { JwtService, TokenExpiredError } from "@nestjs/jwt";
+import * as bcrypt from "bcrypt";
+import { CreateUserDto, LoginDto } from "@/models/dtos";
+import { User } from "@/models/entities";
+import { RequestHandlerUtils } from "@/utils";
+import { v4 as uuidv4 } from "uuid";
+import { CACHE_MANAGER } from "@nestjs/cache-manager";
+import { Cache } from "cache-manager";
 import {
   ACCESS_TOKEN_EXPIRED_TIME,
   REFRESH_TOKEN_EXPIRED_TIME,
   TOKEN_BLACK_LIST_PREFIX,
-} from '@/commons';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { MailerService } from '@nestjs-modules/mailer';
+} from "@/commons";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { MailerService } from "@nestjs-modules/mailer";
+import { UserService } from "./user.service";
 
 @Injectable()
 export class AuthService {
   constructor(
     private jwtService: JwtService,
     private readonly mailerService: MailerService,
+    private readonly userService: UserService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @InjectRepository(User) private readonly userRepository: Repository<User>,
   ) {}
@@ -40,7 +42,7 @@ export class AuthService {
 
     try {
       if (existingUser) {
-        throw new BadRequestException('Email already exists!');
+        throw new BadRequestException("Email already exists!");
       }
 
       const hashedPassword: string = await bcrypt.hash(password, 10);
@@ -54,8 +56,8 @@ export class AuthService {
 
       this.mailerService.sendMail({
         to: createdUser.email,
-        subject: 'Welcome to Lexa',
-        template: 'register',
+        subject: "Welcome to Lexa",
+        template: "register",
         context: { user: userInfo.name },
       });
 
@@ -73,7 +75,7 @@ export class AuthService {
       let email: string;
       let password: string;
 
-      if (typeof emailOrUser === 'string') {
+      if (typeof emailOrUser === "string") {
         email = emailOrUser;
       } else {
         email = emailOrUser.email;
@@ -81,36 +83,28 @@ export class AuthService {
       }
 
       const { password: hashedPassword, ...existingUser } =
-        await this.userRepository.findOneBy({ email: email });
+        await this.userRepository
+          .createQueryBuilder("user")
+          .addSelect("user.password")
+          .where("user.email = :email", { email })
+          .getOne();
 
       if (!existingUser) {
         throw new BadRequestException(
-          'User not found. please check your email or password',
+          "User not found. please check your email or password",
         );
       }
 
       if (password && !(await bcrypt.compare(password, hashedPassword))) {
-        throw new BadRequestException('Invalid password');
+        throw new BadRequestException("Invalid password");
       }
-
-      const sessionId = uuidv4();
 
       const jwtPayload = {
         id: existingUser.id,
         role: existingUser.role,
-        sessionId: sessionId,
       };
 
-      const accessToken: string = this.jwtService.sign(jwtPayload, {
-        expiresIn: ACCESS_TOKEN_EXPIRED_TIME,
-      });
-
-      const refreshToken: string = this.jwtService.sign(
-        { sessionId },
-        {
-          expiresIn: REFRESH_TOKEN_EXPIRED_TIME,
-        },
-      );
+      const { accessToken, refreshToken } = this.generateTokenPair(jwtPayload);
 
       return {
         accessToken,
@@ -123,56 +117,74 @@ export class AuthService {
     }
   }
 
-  async tokenValidate(request: Request, refreshToken: string) {
-    const authToken: string = RequestHandlerUtils.getAuthToken(request);
-    const isInBlackList = await this.cacheManager.get(
-      `${TOKEN_BLACK_LIST_PREFIX}${authToken}`,
+  private generateTokenPair(payload: Object) {
+    const sessionId = uuidv4();
+
+    const accessToken: string = this.jwtService.sign(
+      { ...payload, sessionId },
+      {
+        expiresIn: ACCESS_TOKEN_EXPIRED_TIME,
+      },
     );
 
-    if (!refreshToken) throw new BadRequestException('Invalid refresh token!');
+    const refreshToken: string = this.jwtService.sign(
+      { sessionId },
+      {
+        expiresIn: REFRESH_TOKEN_EXPIRED_TIME,
+      },
+    );
+
+    return { accessToken, refreshToken };
+  }
+
+  async tokenValidate(request: Request) {
+    const accessToken: string = RequestHandlerUtils.getAuthToken(request);
 
     try {
-      let accessToken: string = authToken;
-
       try {
-        if (isInBlackList)
-          throw new TokenExpiredError('Token has expired', new Date());
-        await this.jwtService.verify(authToken);
+        this.jwtService.verify(accessToken);
       } catch (error) {
-        if (error instanceof TokenExpiredError) {
-          accessToken = await this.reValidate(authToken, refreshToken);
-        } else {
-          throw new UnauthorizedException(error.message);
-        }
+        throw new UnauthorizedException("Invalid auth token");
       }
 
-      const existingUser: User = await this.getUserFromRequest(request);
+      const existingUser: User = await this.userService.getUserFromRequest(
+        request,
+      );
 
-      if (!existingUser) {
-        throw new UnauthorizedException('Invalid token');
-      }
-
-      return {
-        accessToken,
-        refreshToken,
-        user: existingUser,
-      };
+      return existingUser;
     } catch (error) {
       if (error instanceof HttpException) throw error;
       throw new InternalServerErrorException(error.message);
     }
   }
 
-  async reValidate(authToken: string, refreshToken: string) {
+  async reValidate(request: Request, refreshToken: string) {
     try {
+      const authToken: string = RequestHandlerUtils.getAuthToken(request);
+
+      if (this.inBlackList(refreshToken))
+        throw new BadRequestException("Invalid refresh token");
+
       const decodedToken = this.jwtService.verify(refreshToken);
       const { iat, exp, ...payload } = this.jwtService.decode(authToken);
 
-      if (decodedToken['sessionId'] !== payload['sessionId'])
-        throw new UnauthorizedException('Tokens session not match!');
-      return this.jwtService.sign(payload, {
-        expiresIn: ACCESS_TOKEN_EXPIRED_TIME,
-      });
+      if (decodedToken["sessionId"] !== payload["sessionId"])
+        throw new UnauthorizedException("Tokens session not match!");
+
+      const currentTime = Math.floor(Date.now() / 1000);
+      const refreshTokenValidTime = decodedToken["exp"] - currentTime;
+
+      this.cacheManager.set(
+        `${TOKEN_BLACK_LIST_PREFIX}${refreshToken}`,
+        refreshToken,
+        {
+          ttl: refreshTokenValidTime,
+        } as any,
+      );
+
+      const tokenPair = this.generateTokenPair(payload);
+
+      return tokenPair;
     } catch (error) {
       throw error;
     }
@@ -183,7 +195,7 @@ export class AuthService {
     const decodedToken = await this.jwtService.decode(authToken);
 
     const currentTime = Math.floor(Date.now() / 1000);
-    const tokenValidTime = decodedToken['exp'] - currentTime;
+    const tokenValidTime = decodedToken["exp"] - currentTime;
 
     await this.cacheManager.set(
       `${TOKEN_BLACK_LIST_PREFIX}${authToken}`,
@@ -192,28 +204,13 @@ export class AuthService {
         ttl: tokenValidTime,
       } as any,
     );
-    return 'Log out successfully';
+    return "Log out successfully";
   }
 
-  async getUserFromRequest(request: Request): Promise<User> {
-    const authToken: string = RequestHandlerUtils.getAuthToken(request);
-    const decodedToken: User = this.jwtService.decode(authToken);
-
-    const cachedUser: User = await this.cacheManager.get(
-      `uid_${decodedToken?.id}`,
-    );
-
-    if (cachedUser) return cachedUser;
-
-    const user = await this.userRepository.findOneBy({
-      email: cachedUser.email,
-    });
-
-    if (user)
-      this.cacheManager.set(`uid_${user.id}`, user, { ttl: 180 } as any);
-    else throw new UnauthorizedException('Invalid user');
-
-    return user;
+  inBlackList(token: string): boolean {
+    return this.cacheManager.get(`${TOKEN_BLACK_LIST_PREFIX}${token}`)
+      ? true
+      : false;
   }
 
   async getBlacklistToken(token: string) {
