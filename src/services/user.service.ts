@@ -32,7 +32,7 @@ export class UserService {
     if (cachedUser) return cachedUser;
 
     const user = await this.userRepository.findOneBy({
-      email: decodedToken.email,
+      id: decodedToken.id,
     });
 
     if (user)

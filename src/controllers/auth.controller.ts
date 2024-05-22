@@ -30,7 +30,7 @@ export class AuthController {
     return await this.authService.validate(user);
   }
 
-  @HasRole("ADMIN")
+  @HasRole("*")
   @Post("sign-out")
   @HttpCode(200)
   async signOut(@Req() request: Request) {
@@ -39,9 +39,7 @@ export class AuthController {
 
   @Post("token-auth")
   @HttpCode(200)
-  async tokenAuth(
-    @Req() request: Request,
-  ) {
+  async tokenAuth(@Req() request: Request) {
     return await this.authService.tokenValidate(request);
   }
 

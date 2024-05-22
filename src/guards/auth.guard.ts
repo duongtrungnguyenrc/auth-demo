@@ -26,10 +26,9 @@ export class AuthGuard implements CanActivate {
       return false;
     }
 
-    if (this.authService.inBlackList(token)) {
+    if (await this.authService.inBlackList(token)) {
       return false;
     }
-
     try {
       const decodedToken = this.jwtService.verify(token);
 

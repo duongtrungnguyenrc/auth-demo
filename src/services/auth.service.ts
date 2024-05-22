@@ -162,7 +162,7 @@ export class AuthService {
     try {
       const authToken: string = RequestHandlerUtils.getAuthToken(request);
 
-      if (this.inBlackList(refreshToken))
+      if (await this.inBlackList(refreshToken))
         throw new BadRequestException("Invalid refresh token");
 
       const decodedToken = this.jwtService.verify(refreshToken);
@@ -207,8 +207,8 @@ export class AuthService {
     return "Log out successfully";
   }
 
-  inBlackList(token: string): boolean {
-    return this.cacheManager.get(`${TOKEN_BLACK_LIST_PREFIX}${token}`)
+  async inBlackList(token: string): Promise<boolean> {
+    return await this.cacheManager.get(`${TOKEN_BLACK_LIST_PREFIX}${token}`)
       ? true
       : false;
   }
